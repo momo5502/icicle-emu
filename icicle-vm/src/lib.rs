@@ -43,7 +43,7 @@ pub struct Vm {
     pub next_timer: u64,
     pub interrupt_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub code: BlockTable,
-    pub jit: icicle_jit::JIT,
+    //pub jit: icicle_jit::JIT,
     pub enable_jit: bool,
     pub enable_recompilation: bool,
     prev_isa_mode: u8,
@@ -66,13 +66,13 @@ pub struct Vm {
 impl Drop for Vm {
     fn drop(&mut self) {
         // Safety: After the Vm instance is destroyed there is no way to access the JIT code.
-        unsafe { self.jit.reset() }
+        //unsafe { self.jit.reset() }
     }
 }
 
 impl Vm {
     pub fn new(cpu: Box<Cpu>, lifter: lifter::BlockLifter) -> Self {
-        let jit = icicle_jit::JIT::new(&cpu);
+        //let jit = icicle_jit::JIT::new(&cpu);
         Self {
             cpu,
             env: Box::new(()),
@@ -82,7 +82,7 @@ impl Vm {
             next_timer: 0,
             interrupt_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             code: BlockTable::default(),
-            jit,
+            //jit,
             enable_jit: true,
             enable_recompilation: true,
             prev_isa_mode: u8::MAX,
@@ -195,13 +195,13 @@ impl Vm {
             if instructions_to_exec > 0 {
                 self.cpu.update_fuel(instructions_to_exec);
 
-                self.run_block_jit();
+                //self.run_block_jit();
 
                 // At the beginning of a block we might decide that we need to switch to the
                 // interpreter. This happens if there is not enough fuel, or a breakpoint is set
                 // inside the block.
-                if self.cpu.exception
-                    == (ExceptionCode::InternalError, InternalError::SwitchToInterpreter).into()
+                //if self.cpu.exception
+                //    == (ExceptionCode::InternalError, InternalError::SwitchToInterpreter).into()
                 {
                     self.run_block_interpreter();
                 }
@@ -476,48 +476,7 @@ impl Vm {
     fn can_enter_jit(&mut self) -> bool {
         // Avoid entering the JIT if: the jit is disabled, we are in the middle of a block, or we
         // are at the start of an internal block.
-        self.cpu.block_offset == 0
-            && self.code.blocks.get(self.cpu.block_id as usize).map_or(false, |x| x.entry.is_some())
-            && self.enable_jit
-    }
-
-    fn run_block_jit(&mut self) {
-        if !self.can_enter_jit() {
-            self.cpu.exception =
-                (ExceptionCode::InternalError, InternalError::SwitchToInterpreter).into();
-            return;
-        }
-
-        self.cpu.exception.clear();
-
-        self.cpu.update_jit_context();
-
-        let mut next_addr = self.cpu.read_pc();
-        if TRACE_EXEC {
-            print_jit_enter(self, next_addr);
-        }
-        while self.cpu.exception.code == ExceptionCode::None as u32 {
-            let jit_func = match self.jit.lookup_fast(next_addr) {
-                Some(func) => {
-                    self.jit.jit_hit += 1;
-                    func
-                }
-                None => self.get_or_compile_jit_block(next_addr),
-            };
-
-            // Safety: the JIT must generate code that is safe to execute.
-            unsafe {
-                next_addr = jit_func(self.cpu.as_mut(), next_addr);
-            }
-        }
-
-        if self.cpu.block_offset != 0 {
-            self.jit_exit_before_end_of_block();
-        }
-
-        if TRACE_EXEC {
-            print_jit_exit(self, next_addr);
-        }
+        false
     }
 
     #[cold]
@@ -550,9 +509,6 @@ impl Vm {
         self.cpu.reset();
         self.cpu.mem.clear();
         self.code.flush_code();
-        if self.enable_jit {
-            self.jit.clear();
-        }
         self.prev_isa_mode = u8::MAX;
     }
 
@@ -604,7 +560,6 @@ impl Vm {
                     );
                 }
             }
-            self.jit.invalidate(id);
         }
 
         let key = self.get_block_key(addr);
@@ -628,7 +583,7 @@ impl Vm {
         let isa_mode = self.cpu.isa_mode();
         if self.prev_isa_mode != isa_mode {
             tracing::debug!("ISA mode change {} -> {isa_mode}", self.prev_isa_mode);
-            self.jit.clear_fast_lookup();
+            //self.jit.clear_fast_lookup();
             self.prev_isa_mode = isa_mode;
             match self.cpu.arch.isa_mode_context.get(isa_mode as usize) {
                 Some(ctx) => self.lifter.set_context(*ctx),
@@ -645,55 +600,6 @@ impl Vm {
         self.cpu.exception.value = InternalError::CorruptedBlockMap as u64;
     }
 
-    #[inline(never)]
-    #[cold]
-    fn get_or_compile_jit_block(&mut self, addr: u64) -> icicle_jit::JitFunction {
-        // Try to find the block corresponding to the target address.
-        let key = self.get_block_key(addr);
-        let group = match self.code.map.get(&key) {
-            Some(group) => group,
-            None => return icicle_jit::runtime::address_not_translated,
-        };
-
-        if self.prev_isa_mode != key.isa_mode as u8 {
-            // ISA mode has changed so we need to prevent addresses from the previous ISA mode from
-            // being included in the fast look up table (which doesn't check the ISA mode).
-            self.prev_isa_mode = key.isa_mode as u8;
-            self.jit.clear_fast_lookup();
-        }
-
-        self.cpu.block_id = group.blocks.0 as u64;
-        self.jit.jit_miss += 1;
-
-        // Check if there is a breakpoint set on any of the blocks in the group.
-        for block in &self.code.blocks[group.range()] {
-            if block.breakpoints > 0 {
-                return icicle_jit::runtime::switch_to_interpreter;
-            }
-        }
-
-        // See if we already have compile the block, but it was inactive.
-        if let Some(&fn_ptr) = self.jit.entry_points.get(&addr) {
-            self.jit.add_fast_lookup(addr, fn_ptr);
-            return fn_ptr;
-        }
-
-        // The block needs to be compiled
-        self.compiled_blocks += 1;
-        tracing::trace!("compile_block: key={key:x?} ({} new)", self.compiled_blocks);
-        let blocks = group.range().collect::<Vec<_>>();
-        let target = icicle_jit::CompilationTarget::new(&self.code.blocks, &blocks);
-        if let Err(e) = self.jit.compile(&target) {
-            tracing::error!("JIT compilation failed: {:?}", e);
-            return icicle_jit::runtime::jit_compilation_error;
-        }
-
-        let fn_ptr = self.jit.entry_points[&addr];
-        self.jit.add_fast_lookup(addr, fn_ptr);
-
-        fn_ptr
-    }
-
     pub fn should_recompile(&self) -> bool {
         self.compiled_blocks > 10 && self.last_recompile.elapsed().as_secs() > 60
     }
@@ -705,12 +611,12 @@ impl Vm {
     pub fn recompile(&mut self) {
         let start = std::time::Instant::now();
 
-        if self.jit.should_purge() {
+        /*if self.jit.should_purge() {
             // Safety: The only way functions from the JIT can be executed is through the Vm struct
             // which we have a unique reference to.
             unsafe { self.jit.reset() }
             self.recompile_offset = 0;
-        }
+        }*/
 
         let mut visited: HashSet<usize> = HashSet::new();
 
@@ -764,21 +670,21 @@ impl Vm {
 
             if !compilation_group.is_empty() {
                 tracing::trace!("[{entry:#x}] compiled: {compilation_group:?}");
-                let target =
-                    icicle_jit::CompilationTarget::new(&self.code.blocks, &compilation_group);
-                if let Err(e) = self.jit.compile(&target) {
+               // let target =
+                //    icicle_jit::CompilationTarget::new(&self.code.blocks, &compilation_group);
+                /*if let Err(e) = self.jit.compile(&target) {
                     tracing::error!("JIT compilation failed: {:?}", e);
-                }
+                }*/
                 compilation_group.clear();
             }
         }
 
-        tracing::info!(
+        /*tracing::info!(
             "Recompiled {} blocks in {:?} ({} entrypoints now dead)",
             self.code.blocks.len() - self.recompile_offset,
             start.elapsed(),
             self.jit.dead,
-        );
+        );*/
 
         self.compiled_blocks = 0;
         self.recompile_offset = self.code.blocks.len();
@@ -913,7 +819,7 @@ impl Vm {
         }
 
         // Make sure that any JIT blocks containing this address are removed from fast lookup.
-        self.jit.remove_fast_lookup(addr);
+        //self.jit.remove_fast_lookup(addr);
 
         true
     }

@@ -4,7 +4,6 @@ members = [
     "icicle-cpu",
     "icicle-fuzzing",
     "icicle-gdb",
-    "icicle-jit",
     "icicle-linux",
     "icicle-mem",
     "icicle-test",

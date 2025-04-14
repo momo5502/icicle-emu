@@ -504,8 +504,11 @@ enum BlockResult {
 
 pub type BlockId = usize;
 
-/// Constant to use for unknown labels.
-const UNKNOWN_BLOCK: usize = 0xbadbadbadbad;
+#[cfg(target_pointer_width = "32")]
+const UNKNOWN_BLOCK: usize = 0xadbadbad as usize;
+
+#[cfg(target_pointer_width = "64")]
+const UNKNOWN_BLOCK: usize = 0xbadbadbadbad as usize;
 
 /// Constant to use for labels that point to the next address
 const NEXT_ADDR_LABEL: u16 = u16::MAX;

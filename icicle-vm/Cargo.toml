@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 icicle-cpu = { path = "../icicle-cpu" }
 icicle-linux = { path = "../icicle-linux" }
-icicle-jit = { path = "../icicle-jit" }
 anyhow = { workspace = true }
 pcode = { workspace = true }
 sleigh-runtime = { workspace = true }
