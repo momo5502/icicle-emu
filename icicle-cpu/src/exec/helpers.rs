@@ -257,6 +257,7 @@ pub mod x86 {
 
     pub const HELPERS: &[(&str, PcodeOpHelper)] = &[
         ("rdtsc", rdtsc),
+        ("rdtscp", rdtscp),
         ("cpuid_basic_info", cpuid_basic_info),
         ("cpuid_Version_info", cpuid_version_info),
         ("cpuid_Extended_Feature_Enumeration_info", cpuid_extended_feature_enumeration_info),
@@ -283,6 +284,11 @@ pub mod x86 {
         cpu.write_var(dst, 0_u64);
     }
 
+    fn rdtscp(cpu: &mut Cpu, dst: VarNode, args: [Value; 2]) {
+        rdtsc(cpu, dst, args);
+        cpu.write_var(dst.slice(8, 4), 0_u32);
+    }
+
     // Basic processor information
     fn cpuid_basic_info(cpu: &mut Cpu, dst: VarNode, _: [Value; 2]) {
         if dst.size != 16 {
@@ -298,8 +304,7 @@ pub mod x86 {
             cpu.write_var(dst.slice(4, 4), u32::from_le_bytes(*b"Genu"));
             cpu.write_var(dst.slice(8, 4), u32::from_le_bytes(*b"ineI"));
             cpu.write_var(dst.slice(12, 4), u32::from_le_bytes(*b"ntel"));
-        }
-        else {
+        } else {
             cpu.write_var(dst.slice(0, 4), 0_u32);
             cpu.write_var(dst.slice(4, 4), u32::from_le_bytes(*b"Icic"));
             cpu.write_var(dst.slice(8, 4), u32::from_le_bytes(*b"leCo"));
